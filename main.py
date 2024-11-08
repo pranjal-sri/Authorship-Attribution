@@ -15,6 +15,9 @@ from training.schedulers import WarmupStepWiseScheduler
 from training.callbacks import EpochCallback
 from data.dataset import ReutersRSTDataset
 from training.checkpoint import ModelCheckpoint
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # Global variables for DDP setup
 DDP_ENABLED = 'RANK' in os.environ and 'WORLD_SIZE' in os.environ and 'LOCAL_RANK' in os.environ
@@ -22,10 +25,11 @@ LOCAL_RANK = int(os.environ.get('LOCAL_RANK', 0))
 RANK = int(os.environ.get('RANK', 0))
 IS_MAIN_PROCESS = not DDP_ENABLED or RANK == 0
 DEVICE = f'cuda:{LOCAL_RANK}' if DDP_ENABLED else ('cuda' if torch.cuda.is_available() else 'cpu')
+print(f"Using device: {DEVICE}")
 
 # Configuration constants
 TRAIN_VAL_SPLIT_FILE = 'train_validation_split_reuters.json'
-DATASET_BASE_PATH = '/content/ReutersDataset/content/ReutersRST_Dataset'
+DATASET_BASE_PATH = 'ReutersRST_Dataset'
 BASE_MODEL_NAME = "sentence-transformers/paraphrase-distilroberta-base-v1"
 CHECKPOINT_DIR = 'checkpoints'
 MODEL_NAME = 'granular_roberta'
@@ -48,10 +52,11 @@ SCHEDULE = {
     ]
 }
 
+
 def setup_ddp():
     if not DDP_ENABLED:
         return
-    
+    os.environ['MASTER_ADDR'] = 'localhost'
     dist.init_process_group(backend="nccl")
     torch.cuda.set_device(LOCAL_RANK)
 
@@ -70,9 +75,10 @@ def main():
     # Initialize model and move to device
     model = GranularRoberta()
     model.to(DEVICE)
+    # model = torch.compile(model)
     # Wrap model with DDP if enabled
     if DDP_ENABLED:
-        model = DDP(model, device_ids=[LOCAL_RANK])
+        model = DDP(model, device_ids=[LOCAL_RANK], find_unused_parameters=True)
     raw_model = model.module if DDP_ENABLED else model
 
     # Initialize tokenizer

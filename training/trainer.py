@@ -133,18 +133,18 @@ class Trainer:
             for k, v in doc2.items():
                 doc2[k] = v.to(self.device)
 
-            with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
-                embedding1 = self.model(doc1['input_ids'],
-                                      doc1['attention_masks_encoder'],
-                                      doc1['attention_masks_granular'],
-                                      doc1['attention_mask_episodes'])
+            # with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+            embedding1 = self.model(doc1['input_ids'],
+                                    doc1['attention_masks_encoder'],
+                                    doc1['attention_masks_granular'],
+                                    doc1['attention_mask_episodes'])
 
-                embedding2 = self.model(doc2['input_ids'],
-                                      doc2['attention_masks_encoder'],
-                                      doc2['attention_masks_granular'],
-                                      doc2['attention_mask_episodes'])
+            embedding2 = self.model(doc2['input_ids'],
+                                    doc2['attention_masks_encoder'],
+                                    doc2['attention_masks_granular'],
+                                    doc2['attention_mask_episodes'])
 
-                loss = self.loss_fn(embedding1, embedding2)
+            loss = self.loss_fn(embedding1, embedding2)
 
             if torch.isnan(loss):
                 print(f"epoch: {epoch} Loss is NaN!")

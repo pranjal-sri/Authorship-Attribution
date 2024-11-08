@@ -1,14 +1,16 @@
 import os
 import wandb
 import torch.distributed as dist
+from dotenv import load_dotenv
 
 class WandbLogger:
     def __init__(self):
-        self.api_key = os.environ.get('W&B_API_KEY')
-        self.project = os.environ.get('W&B_PROJECT')
+        load_dotenv()
+        self.api_key = os.environ.get('WANDB_API_KEY')
+        self.project = os.environ.get('WANDB_PROJECT')
         
         if not self.api_key or not self.project:
-            raise ValueError("W&B_API_KEY and W&B_PROJECT environment variables must be set")
+            raise ValueError("WANDB_API_KEY and WANDB_PROJECT environment variables must be set")
         
         wandb.login(key=self.api_key)
         
