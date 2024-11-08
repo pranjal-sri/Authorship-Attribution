@@ -25,7 +25,10 @@ LOCAL_RANK = int(os.environ.get('LOCAL_RANK', 0))
 RANK = int(os.environ.get('RANK', 0))
 IS_MAIN_PROCESS = not DDP_ENABLED or RANK == 0
 DEVICE = f'cuda:{LOCAL_RANK}' if DDP_ENABLED else ('cuda' if torch.cuda.is_available() else 'cpu')
-print(f"Using device: {DEVICE}")
+print(f"{RANK}: Using device: {DEVICE}")
+print(f"{RANK}: DDP enabled: {DDP_ENABLED}")
+print(f"{RANK}: Is main process: {IS_MAIN_PROCESS}")
+print(f"{RANK}: Local rank: {LOCAL_RANK}")
 
 # Configuration constants
 TRAIN_VAL_SPLIT_FILE = 'train_validation_split_reuters.json'

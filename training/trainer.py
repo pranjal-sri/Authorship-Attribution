@@ -16,6 +16,7 @@ class TrainingConfig:
     validate_every_n_epochs: int = 10
     ddp_enabled: bool = False
     is_main_process: bool = True
+    to_log: bool = False
 
     def __post_init__(self):
         if self.validate and self.validate_every_n_epochs <= 0:
@@ -36,11 +37,12 @@ class Trainer:
         self.device = device
         self.scheduler = scheduler
         self.checkpoint = checkpoint
-        self.logger = WandbLogger()
+        
         
     def train(self, config: TrainingConfig, epoch_callback=None):
         # Only initialize wandb on main process
-        if config.is_main_process:
+        if config.is_main_process and config.to_log:
+            self.logger = WandbLogger()
             self.logger.init(config={
                 'epochs': config.epochs,
                 'validate_every_n_epochs': config.validate_every_n_epochs,
@@ -76,10 +78,9 @@ class Trainer:
                 training_losses.append(train_avg_loss)
                 
                 # Log training metrics
-                if config.is_main_process:
+                if config.is_main_process and config.to_log:
                     self.logger.log({
                         'train/loss': train_avg_loss,
-                        'train/epoch': epoch,
                     })
 
                 if config.should_validate(epoch):
@@ -88,11 +89,10 @@ class Trainer:
                     val_mrrs.append(val_avg_mrr)
                     
                     # Log validation metrics
-                    if config.is_main_process:
+                    if config.is_main_process and config.to_log:
                         self.logger.log({
                             'val/loss': val_avg_loss,
                             'val/mrr': val_avg_mrr,
-                            'val/epoch': epoch,
                         })
                     
                         if self.checkpoint is not None:
@@ -107,7 +107,7 @@ class Trainer:
         
         finally:
             # Ensure wandb run is properly closed on main process
-            if config.is_main_process:
+            if config.is_main_process and config.to_log:
                 self.logger.finish()
 
         return training_losses, val_losses, val_mrrs
