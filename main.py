@@ -25,14 +25,10 @@ LOCAL_RANK = int(os.environ.get('LOCAL_RANK', 0))
 RANK = int(os.environ.get('RANK', 0))
 IS_MAIN_PROCESS = not DDP_ENABLED or RANK == 0
 DEVICE = f'cuda:{LOCAL_RANK}' if DDP_ENABLED else ('cuda' if torch.cuda.is_available() else 'cpu')
-print(f"{RANK}: Using device: {DEVICE}")
-print(f"{RANK}: DDP enabled: {DDP_ENABLED}")
-print(f"{RANK}: Is main process: {IS_MAIN_PROCESS}")
-print(f"{RANK}: Local rank: {LOCAL_RANK}")
 
 # Configuration constants
 TRAIN_VAL_SPLIT_FILE = 'train_validation_split_reuters.json'
-DATASET_BASE_PATH = 'ReutersRST_Dataset'
+DATASET_BASE_PATH = '/local/nlp/pranjal-sri/dev/Authorship-Attribution/Reuters_RST/content/ReutersRST_Dataset'
 BASE_MODEL_NAME = "sentence-transformers/paraphrase-distilroberta-base-v1"
 CHECKPOINT_DIR = 'checkpoints'
 MODEL_NAME = 'granular_roberta'
@@ -41,9 +37,10 @@ NUM_EPOCHS = 100
 BATCH_SIZE = 32
 LEARNING_RATE = 1e-4
 NUM_WORKERS = 12
+TO_LOG = True
 SCHEDULE = {
-    'START_LR': 1e-6,
-    'WARMED_UP_SCHEDULE': (0.1, 1e-4, 'linear_only', None),
+    'START_LR': 1e-10,
+    'WARMED_UP_SCHEDULE': (0.2, 1e-4, 'linear_only', None),
     'FINE_TUNING_SCHEDULE': [
         (0.3, 5e-5, 'last_n_encoder', 1),
         (0.4, 5e-5, 'last_n_encoder', 2),
@@ -57,9 +54,11 @@ SCHEDULE = {
 
 
 def setup_ddp():
+    if IS_MAIN_PROCESS:
+        print("\n=== Setting up DDP ===")
     if not DDP_ENABLED:
         return
-    os.environ['MASTER_ADDR'] = 'localhost'
+    os.environ['MASTER_ADDR'] = '127.0.0.1'
     dist.init_process_group(backend="nccl")
     torch.cuda.set_device(LOCAL_RANK)
 
@@ -70,116 +69,155 @@ def cleanup_ddp():
 def main():
     # DDP setup
     setup_ddp()
-    
-    # Load train-validation split
-    with open(TRAIN_VAL_SPLIT_FILE, 'r') as f:
-        train_validation_files = json.load(f)
-
-    # Initialize model and move to device
-    model = GranularRoberta()
-    model.to(DEVICE)
-    # model = torch.compile(model)
-    # Wrap model with DDP if enabled
-    if DDP_ENABLED:
-        model = DDP(model, device_ids=[LOCAL_RANK], find_unused_parameters=True)
-    raw_model = model.module if DDP_ENABLED else model
-
-    # Initialize tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL_NAME)
-
-    # Setup datasets
-    train_ds = ReutersRSTDataset(tokenizer, train_validation_files['train'],
-                                DATASET_BASE_PATH)
-    
-    # Create samplers and dataloaders
-    train_sampler = DistributedSampler(train_ds, shuffle=False) if DDP_ENABLED else None
-    # Create training dataloader
-    train_dataloader = DataLoader(train_ds, batch_size=BATCH_SIZE,
-                                sampler=train_sampler,
-                                shuffle=False,
-                                num_workers=NUM_WORKERS,
-                                pin_memory=True)
-
-
-    # Create validation dataset and dataloader (only on main process if DDP enabled)
-    val_dataloader = None
-    if IS_MAIN_PROCESS:
-        valid_ds = ReutersRSTDataset(tokenizer, train_validation_files['valid'],
-                                    DATASET_BASE_PATH)
-        val_dataloader = DataLoader(valid_ds, batch_size=BATCH_SIZE,
-                                  shuffle=False,
-                                  num_workers=NUM_WORKERS,
-                                  pin_memory=True)
-
-
-
-    # Setup optimizer and scheduler
-    optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE)
-    warmup_r, warmup_lr, warmup_mode, warmup_num_encoder_layers = SCHEDULE['WARMED_UP_SCHEDULE']
-    scheduler = WarmupStepWiseScheduler(initial_lr= SCHEDULE['START_LR'], 
-                            lr_schedule= [(int(r*NUM_EPOCHS), lr) for (r, lr, _, _) in SCHEDULE['FINE_TUNING_SCHEDULE']], 
-                            warmup_steps= int(warmup_r * NUM_EPOCHS),
-                            warmup_lr= warmup_lr)
-    # Setup epoch callbacks for fine-tuning
-    epoch_callback = EpochCallback()
-    
-    # Add initial warmup callback
-    epoch_callback.add_callback(
-        0,
-        lambda mode=warmup_mode, num_layers=warmup_num_encoder_layers: raw_model.set_trainable_layers(
-            mode,
-            num_encoder_layers=num_layers
-        )
-    )
-    
-    # Add fine-tuning schedule callbacks
-    for (r, _, mode, num_encoder_layers) in SCHEDULE['FINE_TUNING_SCHEDULE']:
-        epoch = int(r * NUM_EPOCHS)
-        num_layers = (int(num_encoder_layers) 
-                     if num_encoder_layers is not None 
-                     else None)
+    try:
+        if IS_MAIN_PROCESS:
+            print("\n=== Starting Training Setup ===")
         
+        # Load train-validation split
+        with open(TRAIN_VAL_SPLIT_FILE, 'r') as f:
+            train_validation_files = json.load(f)
+
+        if IS_MAIN_PROCESS:
+            print(f"Loaded train-validation split: {len(train_validation_files['train'])} train, {len(train_validation_files['valid'])} validation files")
+
+        # Initialize model and move to device
+        model = GranularRoberta()
+        model.to(DEVICE)
+        model = torch.compile(model)
+        # Wrap model with DDP if enabled
+        if DDP_ENABLED:
+            model = DDP(model, device_ids=[LOCAL_RANK], find_unused_parameters=True)
+        raw_model = model.module if DDP_ENABLED else model
+
+        if IS_MAIN_PROCESS:
+            print(f"\nInitialized model and moved to device {DEVICE}")
+            print(f"DDP wrapper applied: {DDP_ENABLED}")
+
+        # Initialize tokenizer
+        tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL_NAME)
+
+        # Setup datasets
+        train_ds = ReutersRSTDataset(tokenizer, train_validation_files['train'],
+                                    DATASET_BASE_PATH)
+        
+        if IS_MAIN_PROCESS:
+            print(f"\nDataset Setup:")
+            print(f"Training samples: {len(train_ds)}")
+
+        # Create samplers and dataloaders
+        train_sampler = DistributedSampler(train_ds, shuffle=False) if DDP_ENABLED else None
+        # Create training dataloader
+        train_dataloader = DataLoader(train_ds, batch_size=BATCH_SIZE,
+                                    sampler=train_sampler,
+                                    shuffle=False,
+                                    num_workers=NUM_WORKERS,
+                                    pin_memory=True)
+
+
+        # Create validation dataset and dataloader (only on main process if DDP enabled)
+        val_dataloader = None
+        if IS_MAIN_PROCESS:
+            valid_ds = ReutersRSTDataset(tokenizer, train_validation_files['valid'],
+                                        DATASET_BASE_PATH)
+            val_dataloader = DataLoader(valid_ds, batch_size=BATCH_SIZE,
+                                    shuffle=False,
+                                    num_workers=NUM_WORKERS,
+                                    pin_memory=True)
+            print(f"Validation samples: {len(valid_ds)}")
+
+
+
+        # Setup optimizer and scheduler
+        optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE)
+        warmup_r, warmup_lr, warmup_mode, warmup_num_encoder_layers = SCHEDULE['WARMED_UP_SCHEDULE']
+        scheduler = WarmupStepWiseScheduler(initial_lr= SCHEDULE['START_LR'], 
+                                lr_schedule= [(int(r*NUM_EPOCHS), lr) for (r, lr, _, _) in SCHEDULE['FINE_TUNING_SCHEDULE']], 
+                                warmup_steps= int(warmup_r * NUM_EPOCHS),
+                                warmup_lr= warmup_lr)
+        # Setup epoch callbacks for fine-tuning
+        epoch_callback = EpochCallback()
+        
+        # Add initial warmup callback
         epoch_callback.add_callback(
-            epoch,
-            lambda mode=mode, num_layers=num_layers: raw_model.set_trainable_layers(
-                mode, 
+            0,
+            lambda mode=warmup_mode, num_layers=warmup_num_encoder_layers: raw_model.set_trainable_layers(
+                mode,
                 num_encoder_layers=num_layers
             )
         )
-    
-    # Initialize checkpoint handler
-    checkpoint = ModelCheckpoint(
-        checkpoint_dir=CHECKPOINT_DIR,
-        model_name=MODEL_NAME
-    )
+        
+        # Add fine-tuning schedule callbacks
+        for (r, _, mode, num_encoder_layers) in SCHEDULE['FINE_TUNING_SCHEDULE']:
+            epoch = int(r * NUM_EPOCHS)
+            num_layers = (int(num_encoder_layers) 
+                        if num_encoder_layers is not None 
+                        else None)
+            
+            epoch_callback.add_callback(
+                epoch,
+                lambda mode=mode, num_layers=num_layers: raw_model.set_trainable_layers(
+                    mode, 
+                    num_encoder_layers=num_layers
+                )
+            )
+        
+        # Initialize checkpoint handler
+        checkpoint = ModelCheckpoint(
+            checkpoint_dir=CHECKPOINT_DIR,
+            model_name=MODEL_NAME
+        )
 
-    # Initialize trainer
-    trainer = Trainer(
-        model=model,
-        train_dataloader=train_dataloader,
-        val_dataloader=val_dataloader,
-        loss_fn=MNRL_loss,
-        optimizer=optimizer,
-        device=DEVICE,
-        scheduler=scheduler,
-        checkpoint=checkpoint
-    )
+        # Initialize trainer
+        trainer = Trainer(
+            model=model,
+            train_dataloader=train_dataloader,
+            val_dataloader=val_dataloader,
+            loss_fn=MNRL_loss,
+            optimizer=optimizer,
+            device=DEVICE,
+            scheduler=scheduler,
+            checkpoint=checkpoint,
+        )
 
-    # Training configuration
-    train_config = TrainingConfig(
-        epochs=NUM_EPOCHS,
-        validate=True,
-        validate_every_n_epochs=1,
-        ddp_enabled=DDP_ENABLED,
-        is_main_process=IS_MAIN_PROCESS
-    )
+        # Training configuration
+        train_config = TrainingConfig(
+            epochs=NUM_EPOCHS,
+            validate=True,
+            validate_every_n_epochs=1,
+            ddp_enabled=DDP_ENABLED,
+            is_main_process=IS_MAIN_PROCESS,
+            to_log=TO_LOG
+        )
 
-    # Train the model
-    torch.set_float32_matmul_precision('high')
-    training_losses, val_losses, val_mrrs = trainer.train(train_config, epoch_callback)
-    
+        if IS_MAIN_PROCESS:
+            print("\nTraining Schedule:")
+            print(f"Initial warmup: {warmup_r*100}% of epochs with lr={warmup_lr}")
+            print("Fine-tuning stages:")
+            for idx, (r, lr, mode, layers) in enumerate(SCHEDULE['FINE_TUNING_SCHEDULE'], 1):
+                print(f"  Stage {idx}: At {r*100}% epochs - lr={lr}, mode={mode}, layers={layers}")
+
+        # Before starting training
+        if IS_MAIN_PROCESS:
+            print("\n=== Starting Training ===")
+            print(f"Total epochs: {NUM_EPOCHS}")
+            print(f"Batch size: {BATCH_SIZE}")
+            print(f"Initial learning rate: {LEARNING_RATE}")
+            print("=" * 50 + "\n")
+
+        # Train the model
+        torch.set_float32_matmul_precision('high')
+        training_losses, val_losses, val_mrrs = trainer.train(train_config, epoch_callback)
+        
+        if IS_MAIN_PROCESS:
+            print("\n=== Training Completed ===")
+            print(f"Final training loss: {training_losses[-1]:.4f}")
+            if val_losses:
+                print(f"Final validation loss: {val_losses[-1]:.4f}")
+                print(f"Final validation MRR: {val_mrrs[-1]:.4f}")
+
     # Cleanup DDP if enabled
-    cleanup_ddp()
+    finally:
+        cleanup_ddp()
 
 if __name__ == "__main__":
     main()

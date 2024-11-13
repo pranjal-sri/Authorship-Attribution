@@ -13,10 +13,13 @@ class CustomAttention(nn.Module):
         self.key = nn.Linear(config.hidden_size, self.all_head_size)
         self.query = nn.Linear(config.hidden_size, self.all_head_size)
         self.value = nn.Linear(config.hidden_size, self.all_head_size)
+        self.dropout_p = config.attention_probs_dropout_prob
+        self.hidden_dropout = nn.Dropout(config.hidden_dropout_prob)
 
     def forward(self, hidden_states, attention_mask=None, granularity_mask=None,
                 head_mask=None, encoder_hidden_states=None, encoder_attention_mask=None,
                 past_key_value=None, output_attentions=False):
+        hidden_states = self.hidden_dropout(hidden_states)
         h = self.num_attention_heads
         B, T, C = hidden_states.shape
         k = self.key(hidden_states)
@@ -27,8 +30,13 @@ class CustomAttention(nn.Module):
         v = v.view(B, T, h, -1).permute(0, 2, 1, 3)
 
         attention_mask_combined = torch.clamp(attention_mask + granularity_mask, min=HF_MASK_VALUE)
-        out = F.scaled_dot_product_attention(q, k, v, attn_mask=attention_mask_combined)
+        out = F.scaled_dot_product_attention(
+            q, k, v, 
+            attn_mask=attention_mask_combined,
+            dropout_p=self.dropout_p if self.training else 0.0
+        )
         out = out.transpose(1, 2).contiguous().view(B, T, -1)
+        out = self.hidden_dropout(out)
         return (out,)
 
 class GELUActivation(nn.Module):
@@ -43,6 +51,7 @@ class CustomIntermediate(nn.Module):
         super().__init__()
         self.dense = nn.Linear(config.hidden_size, config.intermediate_size)
         self.intermediate_act_fn = GELUActivation()
+
     def forward(self, hidden_states):
         hidden_states = self.dense(hidden_states)
         hidden_states = self.intermediate_act_fn(hidden_states)

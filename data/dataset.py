@@ -58,8 +58,6 @@ class ReutersRSTDataset(Dataset):
         return self.n_samples_per_author * len(self.authors)
 
     def __getitem__(self, idx):
-        if torch.distributed.is_available() and torch.distributed.is_initialized():
-            print(f"Rank: {torch.distributed.get_rank()}, idx: {idx}")
         author = self.authors_data[idx]
         file_a, file_b = self.author_file_pairs_map[author].get_next_pair()
         return ([file_a, file_b], self.get_file_tensors(file_a), self.get_file_tensors(file_b))

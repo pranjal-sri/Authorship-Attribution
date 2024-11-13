@@ -54,8 +54,10 @@ class GranularRoberta(nn.Module):
     roberta_model = AutoModel.from_pretrained("sentence-transformers/paraphrase-distilroberta-base-v1")
     r_config = self.generate_roberta_config()
     self.roberta = CustomRobertaModel(r_config, roberta_model)
+    self.config = r_config
     del roberta_model
     self.linear = nn.Linear(r_config.hidden_size , r_config.hidden_size)
+    self.dropout = nn.Dropout(p=r_config.hidden_dropout_prob)
 
   @staticmethod
   def generate_roberta_config():
@@ -223,9 +225,13 @@ class GranularRoberta(nn.Module):
     if torch.isnan(episode_embeddings).any():
       print("\t\tepisode_embeddings is NaN!")
 
+    episode_embeddings = self.dropout(episode_embeddings)
+    
     author_embeddings = self.attention_pooling(episode_embeddings, episode_mask)
     if torch.isnan(author_embeddings).any():
       print("\t\tauthor_embeddings is NaN after attention!")
+            
+    author_embeddings = self.dropout(author_embeddings)
     author_embeddings = self.linear(author_embeddings)
     if torch.isnan(author_embeddings).any():
       print("\t\tauthor_embeddings is NaN after linear!")
