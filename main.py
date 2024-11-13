@@ -4,6 +4,8 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
 from torch.utils.data import DataLoader
 import os
+import random
+import numpy as np
 
 from transformers import AutoTokenizer
 import json
@@ -39,8 +41,8 @@ LEARNING_RATE = 1e-4
 NUM_WORKERS = 12
 TO_LOG = True
 SCHEDULE = {
-    'START_LR': 1e-10,
-    'WARMED_UP_SCHEDULE': (0.2, 1e-4, 'linear_only', None),
+    'START_LR': 1e-6,
+    'WARMED_UP_SCHEDULE': (0.2, 1e-3, 'linear_only', None),
     'FINE_TUNING_SCHEDULE': [
         (0.3, 5e-5, 'last_n_encoder', 1),
         (0.4, 5e-5, 'last_n_encoder', 2),
@@ -52,6 +54,15 @@ SCHEDULE = {
     ]
 }
 
+def set_seeds(seed=42):
+    """Set seeds for reproducibility"""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    # Optional: for complete determinism (may slow down training)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 def setup_ddp():
     if IS_MAIN_PROCESS:
@@ -70,6 +81,9 @@ def main():
     # DDP setup
     setup_ddp()
     try:
+        # Set seeds before any other operations
+        set_seeds()
+        
         if IS_MAIN_PROCESS:
             print("\n=== Starting Training Setup ===")
         

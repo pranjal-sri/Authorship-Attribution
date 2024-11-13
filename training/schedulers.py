@@ -63,11 +63,9 @@ class WarmupStepWiseScheduler:
         self.lrs = [lr for _, lr in self.lr_schedule]
 
     def __call__(self, epoch):
-        if epoch < self.warmup_steps//2:
+        if epoch < self.warmup_steps:
             # Linear warm-up
-            answer =  self.initial_lr + ((self.warmup_lr - self.initial_lr) * epoch / (self.warmup_steps // 2))
-        elif epoch < self.warmup_steps:
-            answer =  self.initial_lr + ((self.warmup_lr - self.initial_lr) * (epoch - self.warmup_steps // 2) / (self.warmup_steps // 2))
+            answer =  self.initial_lr + ((self.warmup_lr - self.initial_lr) * epoch / (self.warmup_steps))
         else:
             # Step-wise changes after warm-up
             pos = bisect.bisect_right(self.epochs, epoch) - 1

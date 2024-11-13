@@ -82,9 +82,6 @@ class Trainer:
                 if epoch_callback:
                     epoch_callback.execute(epoch)
 
-                # Set epoch for distributed sampler
-                if config.ddp_enabled:
-                    self.train_dataloader.sampler.set_epoch(epoch)
                 train_avg_loss = self.train_epoch(config, epoch)
                 training_losses.append(train_avg_loss)
                 if config.to_log:
@@ -122,6 +119,7 @@ class Trainer:
         return training_losses, val_losses, val_mrrs
 
     def train_epoch(self, config, epoch):
+        ddp_factor = dist.get_world_size() if config.ddp_enabled else 1.0
         current_lr = self.optimizer.param_groups[0]['lr']
         if self.scheduler:
             for param_group in self.optimizer.param_groups:
@@ -156,7 +154,8 @@ class Trainer:
                                         doc2['attention_mask_episodes'])
 
                 loss = self.loss_fn(embedding1, embedding2)
-                loss = dist.get_world_size() * loss
+                if config.ddp_enabled:
+                    loss = dist.get_world_size() * loss
 
             if torch.isnan(loss):
                 print(f"epoch: {epoch} Loss is NaN!")
