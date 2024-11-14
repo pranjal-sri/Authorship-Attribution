@@ -26,23 +26,24 @@ DDP_ENABLED = 'RANK' in os.environ and 'WORLD_SIZE' in os.environ and 'LOCAL_RAN
 LOCAL_RANK = int(os.environ.get('LOCAL_RANK', 0))
 RANK = int(os.environ.get('RANK', 0))
 IS_MAIN_PROCESS = not DDP_ENABLED or RANK == 0
-DEVICE = f'cuda:{LOCAL_RANK}' if DDP_ENABLED else ('cuda' if torch.cuda.is_available() else 'cpu')
+DEVICE = f"cuda:{LOCAL_RANK}" if DDP_ENABLED else ("cuda" if torch.cuda.is_available() else "cpu")
 
 # Configuration constants
 TRAIN_VAL_SPLIT_FILE = 'train_validation_split_reuters.json'
+
 DATASET_BASE_PATH = '/local/nlp/pranjal-sri/dev/Authorship-Attribution/Reuters_RST/content/ReutersRST_Dataset'
 BASE_MODEL_NAME = "sentence-transformers/paraphrase-distilroberta-base-v1"
 CHECKPOINT_DIR = 'checkpoints'
 MODEL_NAME = 'granular_roberta'
-
+RUN_NAME = "SGD-test"
 NUM_EPOCHS = 100
 BATCH_SIZE = 32
-LEARNING_RATE = 1e-4
+LEARNING_RATE = 1e-2
 NUM_WORKERS = 12
-TO_LOG = True
+TO_LOG = False
 SCHEDULE = {
-    'START_LR': 1e-6,
-    'WARMED_UP_SCHEDULE': (0.2, 1e-3, 'linear_only', None),
+    'START_LR': 1e-3,
+    'WARMED_UP_SCHEDULE': (0.2, 1e-2, 'linear_only', None),
     'FINE_TUNING_SCHEDULE': [
         (0.3, 5e-5, 'last_n_encoder', 1),
         (0.4, 5e-5, 'last_n_encoder', 2),
@@ -142,7 +143,9 @@ def main():
 
 
         # Setup optimizer and scheduler
-        optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE)
+        # optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE)
+        optimizer = torch.optim.SGD(model.parameters(), lr=LEARNING_RATE, nesterov = True, momentum = 0.9)
+
         warmup_r, warmup_lr, warmup_mode, warmup_num_encoder_layers = SCHEDULE['WARMED_UP_SCHEDULE']
         scheduler = WarmupStepWiseScheduler(initial_lr= SCHEDULE['START_LR'], 
                                 lr_schedule= [(int(r*NUM_EPOCHS), lr) for (r, lr, _, _) in SCHEDULE['FINE_TUNING_SCHEDULE']], 
