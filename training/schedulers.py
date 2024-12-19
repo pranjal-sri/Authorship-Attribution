@@ -53,7 +53,7 @@ class WarmupStepWiseScheduler:
             lr_schedule (list of tuples): A list of (epoch, learning_rate) tuples, sorted by epoch,
                                           indicating step-wise changes after the warm-up.
             warmup_steps (int): The number of steps for the warm-up phase.
-            warmup_lr (float): The learning rate at the end of the warm-up phase.
+            warmup_lr (float): The learning rate at the end of the warm-up phase. 
         """
         self.initial_lr = initial_lr
         self.lr_schedule = sorted(lr_schedule)
@@ -65,14 +65,15 @@ class WarmupStepWiseScheduler:
     def __call__(self, epoch):
         if epoch < self.warmup_steps:
             # Linear warm-up
-            return self.initial_lr + (self.warmup_lr - self.initial_lr) * epoch / self.warmup_steps
+            answer =  self.initial_lr + ((self.warmup_lr - self.initial_lr) * epoch / (self.warmup_steps))
         else:
             # Step-wise changes after warm-up
             pos = bisect.bisect_right(self.epochs, epoch) - 1
             if pos < 0:
-                return self.warmup_lr
+                answer = self.warmup_lr
             else:
-                return self.lrs[pos]
+                answer =  self.lrs[pos]
+        return answer
 
     def visualize(self, total_steps=100):
         import matplotlib.pyplot as plt

@@ -16,6 +16,7 @@ class TrainingConfig:
     validate_every_n_epochs: int = 10
     ddp_enabled: bool = False
     is_main_process: bool = True
+    to_log: bool = False
 
     def __post_init__(self):
         if self.validate and self.validate_every_n_epochs <= 0:
@@ -33,69 +34,72 @@ class Trainer:
         self.val_dataloader = val_dataloader
         self.loss_fn = loss_fn
         self.optimizer = optimizer
-        self.device = device
         self.scheduler = scheduler
         self.checkpoint = checkpoint
-        self.logger = WandbLogger()
+        self.device = device
+        
         
     def train(self, config: TrainingConfig, epoch_callback=None):
-        # Only initialize wandb on main process
-        if config.is_main_process:
-            self.logger.init(config={
-                'epochs': config.epochs,
-                'validate_every_n_epochs': config.validate_every_n_epochs,
-                'batch_size': self.train_dataloader.batch_size,
-                'optimizer': self.optimizer.__class__.__name__,
-                'scheduler': self.scheduler.__class__.__name__ if self.scheduler else None,
-            })
-        
-        training_losses = []
-        val_losses = []
-        val_mrrs = []
-        
         try:
-            # Load checkpoint only on main process
-            if self.checkpoint is not None and config.is_main_process:
-                start_epoch, best_mrr, _ = self.checkpoint.load_checkpoint(
+            # Only initialize wandb on main process
+            if config.is_main_process and config.to_log:
+                self.logger = WandbLogger()
+                self.logger.init(config={
+                    'epochs': config.epochs,
+                    'validate_every_n_epochs': config.validate_every_n_epochs,
+                    'batch_size': self.train_dataloader.batch_size,
+                    'optimizer': self.optimizer.__class__.__name__,
+                    'scheduler': self.scheduler.__class__.__name__ if self.scheduler else None,
+                })
+        
+            training_losses = []
+            val_losses = []
+            val_mrrs = []
+            
+            # Initialize start_epoch and best_mrr
+            start_epoch = 0
+            best_mrr = float('-inf')
+            
+            # Load checkpoint with DDP-aware logic
+            if self.checkpoint is not None:
+                loaded_epoch, loaded_mrr, _ = self.checkpoint.load_checkpoint(
                     self.model, 
                     self.optimizer, 
-                    self.device
+                    self.device,
+                    config.ddp_enabled  # Pass DDP flag to checkpoint loading
                 )
-                if start_epoch is not None:
-                    print(f"Resuming from epoch {start_epoch} with best MRR: {best_mrr:.4f}")
+                if loaded_epoch is not None:
+                    start_epoch = loaded_epoch + 1  # Start from next epoch
+                    best_mrr = loaded_mrr
+                    if config.is_main_process:
+                        print(f"Resuming from epoch {start_epoch} with best MRR: {best_mrr:.4f}")
 
-            for epoch in range(config.epochs):
+            # Ensure all processes are synchronized after checkpoint loading
+            if config.ddp_enabled:
+                dist.barrier()
+
+            for epoch in range(start_epoch, config.epochs):
                 if epoch_callback:
                     epoch_callback.execute(epoch)
 
-                # Set epoch for distributed sampler
-                if config.ddp_enabled:
-                    self.train_dataloader.sampler.set_epoch(epoch)
-
                 train_avg_loss = self.train_epoch(config, epoch)
                 training_losses.append(train_avg_loss)
-                
-                # Log training metrics
-                if config.is_main_process:
-                    self.logger.log({
+                if config.to_log:
+                    epoch_log = {
                         'train/loss': train_avg_loss,
-                        'train/epoch': epoch,
-                    })
-
-                if config.should_validate(epoch):
+                        'train/lr': self.optimizer.param_groups[0]['lr']
+                    }
+                if config.should_validate(epoch) and config.is_main_process:
                     val_avg_loss, val_avg_mrr = self.validate(config, epoch)
                     val_losses.append(val_avg_loss)
                     val_mrrs.append(val_avg_mrr)
                     
                     # Log validation metrics
-                    if config.is_main_process:
-                        self.logger.log({
-                            'val/loss': val_avg_loss,
-                            'val/mrr': val_avg_mrr,
-                            'val/epoch': epoch,
-                        })
-                    
-                        if self.checkpoint is not None:
+                    if config.to_log:
+                        epoch_log['val/loss'] = val_avg_loss
+                        epoch_log['val/mrr'] = val_avg_mrr
+                            
+                    if self.checkpoint is not None:
                             self.checkpoint.save_checkpoint(
                                 self.model,
                                 self.optimizer,
@@ -104,18 +108,23 @@ class Trainer:
                                 val_avg_loss,
                                 config.ddp_enabled
                             )
+                
+                if config.to_log and config.is_main_process:
+                    self.logger.log(epoch_log)
         
         finally:
-            # Ensure wandb run is properly closed on main process
-            if config.is_main_process:
+            if config.is_main_process and config.to_log:
                 self.logger.finish()
 
         return training_losses, val_losses, val_mrrs
 
     def train_epoch(self, config, epoch):
+        ddp_factor = dist.get_world_size() if config.ddp_enabled else 1.0
+        current_lr = self.optimizer.param_groups[0]['lr']
         if self.scheduler:
             for param_group in self.optimizer.param_groups:
                 param_group['lr'] = self.scheduler(epoch)
+                current_lr = self.optimizer.param_groups[0]['lr']
 
         self.model.train()
         avg_loss = 0.0
@@ -135,16 +144,18 @@ class Trainer:
 
             with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
                 embedding1 = self.model(doc1['input_ids'],
-                                      doc1['attention_masks_encoder'],
-                                      doc1['attention_masks_granular'],
-                                      doc1['attention_mask_episodes'])
+                                        doc1['attention_masks_encoder'],
+                                        doc1['attention_masks_granular'],
+                                        doc1['attention_mask_episodes'])
 
                 embedding2 = self.model(doc2['input_ids'],
-                                      doc2['attention_masks_encoder'],
-                                      doc2['attention_masks_granular'],
-                                      doc2['attention_mask_episodes'])
+                                        doc2['attention_masks_encoder'],
+                                        doc2['attention_masks_granular'],
+                                        doc2['attention_mask_episodes'])
 
                 loss = self.loss_fn(embedding1, embedding2)
+                if config.ddp_enabled:
+                    loss = dist.get_world_size() * loss
 
             if torch.isnan(loss):
                 print(f"epoch: {epoch} Loss is NaN!")
@@ -157,6 +168,7 @@ class Trainer:
 
             avg_loss += loss.item()
 
+
         # Average loss calculation and logging
         avg_loss = avg_loss / len(self.train_dataloader)
         
@@ -166,14 +178,15 @@ class Trainer:
             avg_loss = avg_loss_tensor.item() / dist.get_world_size()
         
         if config.is_main_process:
-            print(f"Epoch {epoch}: Loss {avg_loss:.4f}")
+            print(f"Epoch {epoch}: Loss {avg_loss:.4f}, LR {current_lr:.6f}")
         
         return avg_loss
+    
 
     def validate(self, config, epoch):
         self.model.eval()
         
-        # Initialize tensors for all processes
+        # Initialize tensors for all processes - ensure they're on CUDA if using GPU
         err_val = torch.tensor(0.0, device=self.device)
         mrr_val = torch.tensor(0.0, device=self.device)
         
@@ -209,19 +222,9 @@ class Trainer:
                     total_err += err.item()
                     total_mrr += mrr.item()
 
-            err_val = torch.tensor(total_err / len(self.val_dataloader), device=self.device)
-            mrr_val = torch.tensor(total_mrr / len(self.val_dataloader), device=self.device)
+            # Move results to the correct device and ensure they're the right type
+            err_val = torch.tensor(total_err / len(self.val_dataloader), dtype=torch.float32, device=self.device)
+            mrr_val = torch.tensor(total_mrr / len(self.val_dataloader), dtype=torch.float32, device=self.device)
             
-            print(f"Epoch {epoch} / Validation Step: Loss: {err_val:.4f}, MRR: {mrr_val:.4f}")
-            self.logger.log({
-                'val/loss': err_val.item(),
-                'val/mrr': mrr_val.item(),
-                'val/epoch': epoch,
-            })
-
-        # Broadcast validation results to all processes if distributed
-        if config.ddp_enabled:
-            dist.broadcast(err_val, 0)
-            dist.broadcast(mrr_val, 0)
-        
+            print(f"Epoch {epoch} / Validation Step: Loss: {err_val.item():.4f}, MRR: {mrr_val.item():.4f}")
         return err_val.item(), mrr_val.item()

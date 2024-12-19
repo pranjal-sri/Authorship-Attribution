@@ -18,6 +18,7 @@ class TreeAttentionSpanExtractor:
 
     @staticmethod
     def extract_attention_spans(root, height_map=None, tree_height=None, n_layers=6):
+        # import pdb; pdb.set_trace()
         if not height_map or not tree_height:
             height_map, tree_height = TreeAttentionSpanExtractor._get_height_map_of_tree(root)
 
@@ -36,4 +37,5 @@ class TreeAttentionSpanExtractor:
                     filtered_elements.add(candidate)
 
             attention_spans[curr_layer] = sorted([(n.start, n.end) for n in filtered_elements])
-            prev_elements = filtered_elements 
+            prev_elements = filtered_elements
+        return attention_spans

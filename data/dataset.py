@@ -5,6 +5,7 @@ from collections import defaultdict
 import random
 from rst_tree.serializer import TreeSerializer
 from rst_tree.tree_attention_extractor import TreeAttentionSpanExtractor
+import torch.distributed as dist
 
 class Author_file_pair_generator:
     def __init__(self, author_files):
@@ -49,8 +50,8 @@ class ReutersRSTDataset(Dataset):
     def generate_data(self):
         authors_data = []
         for _ in range(0, self.n_samples_per_author * len(self.authors), self.batch_size):
-            authors_data.append(random.choices(self.authors, k=self.batch_size))
-        authors_data.append(random.choices(self.authors, k=self.batch_size))
+            authors_data.extend(random.choices(self.authors, k=self.batch_size))
+        authors_data.extend(random.choices(self.authors, k=self.batch_size))
         return authors_data
 
     def __len__(self):
@@ -74,6 +75,7 @@ class ReutersRSTDataset(Dataset):
         for i, k in enumerate(filtered_chunk_keys):
             tree, height_map, tree_height = TreeSerializer.dict_to_tree(file_dict[k]['tree'])
             attn_spans = TreeAttentionSpanExtractor.extract_attention_spans(tree, height_map, tree_height)
+
             text = file_dict[k]['text']
 
             enc = self.tokenizer(text, return_tensors='pt', max_length=self.MAX_EPISODE_LENGTH,
